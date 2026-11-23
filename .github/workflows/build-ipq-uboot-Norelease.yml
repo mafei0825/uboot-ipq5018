@@ -1,0 +1,112 @@
+
+name: Build U-Boot for IPQ Devices
+
+on:
+  push:
+  # pull_request:
+  schedule:
+    - cron: '0 0 15 * *'
+  workflow_dispatch:
+    inputs:
+      ipq_type:
+        description: 'Please select the IPQ type(s) to build. for example: ipq6018,ipq807x,all = all types.'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - ipq40xx
+          - ipq5018
+          - ipq5332
+          - ipq6018
+          - ipq806x
+          - ipq807x
+          - ipq9574
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # 【已删除 Job 级 if】避免在 matrix 展开前求值导致整个 Job 被跳过
+
+    env:
+      TZ: Asia/Shanghai
+      NODE_VERSION: '24'
+      # 【已移除 SHOULD_RUN_STEP 字符串变量】判断直接写进各 Step 的 if
+      TOOLCHAIN: "https://github.com/1980490718/toolchain-arm_cortex-a7_gcc-5.2.0.git"
+      DEPENDENCIES: "build-essential libncurses5-dev gawk git gettext libssl-dev python3 wget cpio flex bison bc rsync zopfli device-tree-compiler"
+
+    strategy:
+      matrix:
+        ipq_type: ['ipq40xx', 'ipq5018', 'ipq5332', 'ipq6018', 'ipq806x', 'ipq807x', 'ipq9574']
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Show current timezone and time
+        run: |
+          echo "Current timezone: $(timedatectl show -p Timezone --value)"
+          echo "Current time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ${{ env.DEPENDENCIES }}
+
+      - name: Install Node.js packages(minifier, css, js, terser, svgo) for Web interface compression
+        run: sudo npm install -g html-minifier-terser clean-css terser svgo
+
+      - name: Clone Toolchain to staging_dir
+        run: |
+          git clone --depth=1 ${{ env.TOOLCHAIN }} ../staging_dir
+          echo "Clone Toolchain to staging_dir"
+          ls -la ../staging_dir/
+          if [ -d "../staging_dir/toolchain-arm_cortex-a7_gcc-5.2.0_musl-1.1.16_eabi/bin" ]; then
+            echo "Toolchain bin path verified"
+          else
+            echo "Warning: Expected path not found"
+            find ../staging_dir -name "*gcc*" | head -10
+          fi
+
+      - name: Build ${{ matrix.ipq_type }} U-Boot
+        if: success() && (github.event_name != 'workflow_dispatch' || inputs.ipq_type == 'all' || inputs.ipq_type == matrix.ipq_type)
+        run: ./build.sh ${{ matrix.ipq_type }}
+
+      - name: Rename artifacts with branch-date-time suffix
+        if: success() && (github.event_name != 'workflow_dispatch' || inputs.ipq_type == 'all' || inputs.ipq_type == matrix.ipq_type)
+        run: |
+          cd bin
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          BUILD_TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
+          SUFFIX="${BRANCH_NAME}-${BUILD_TIMESTAMP}"
+          for f in *.elf *.mbn; do
+            if [ -f "$f" ]; then
+              BASENAME="${f%.*}"
+              EXT="${f##*.}"
+              NEW_NAME="${BASENAME}-${SUFFIX}.${EXT}"
+              mv "$f" "$NEW_NAME"
+              echo "Renamed: $f -> $NEW_NAME"
+            fi
+          done
+          echo "Final artifact list:"
+          ls -la
+
+      - name: Upload compiled artifacts (bin directory)
+        if: success() && (github.event_name != 'workflow_dispatch' || inputs.ipq_type == 'all' || inputs.ipq_type == matrix.ipq_type)
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: u-boot-${{ matrix.ipq_type }}
+          path: bin/
+          retention-days: 30
+
+      - name: Show bin directory content
+        if: success() && (github.event_name != 'workflow_dispatch' || inputs.ipq_type == 'all' || inputs.ipq_type == matrix.ipq_type)
+        run: |
+          echo " ${{ matrix.ipq_type }} Build completed!"
+          ls -la bin/ || echo "bin directory is empty"
